@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useMemo } from "react"
+import { useEffect, useState, useMemo, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -14,7 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { SubmissionStatus } from "@/lib/google-sheets"
-import { Loader2, AlertCircle, Settings, ChevronRight, Minus, ArrowUpDown, ExternalLink, Filter, Calendar } from "lucide-react"
+import { Loader2, AlertCircle, Settings, ChevronRight, Minus, ArrowUpDown, ExternalLink, Filter, Calendar, Lock } from "lucide-react"
 
 interface SubmissionStatusResponse {
   statuses: SubmissionStatus[]
@@ -78,10 +78,9 @@ export default function SubmissionsPage() {
     })
   }
 
-  // ■ フォーム一覧の取得（新しい順に並び替え）
+  // フォーム一覧の取得（新しい順に並び替え）
   const allForms = useMemo(() => {
     if (!data || data.statuses.length === 0) return []
-    // 元のデータは古い順（シートの上から順）なので、reverse()で反転させて「新しい順」にする
     return [...data.statuses[0].forms].reverse()
   }, [data])
 
@@ -94,14 +93,14 @@ export default function SubmissionsPage() {
   }, [allForms, selectedForm])
 
   // 提出率計算ヘルパー
-  const calculateSubmissionRate = (userStatus: SubmissionStatus) => {
+  const calculateSubmissionRate = useCallback((userStatus: SubmissionStatus) => {
     const targetFormIds = targetForms.map(f => f.formId)
     const formsToCheck = userStatus.forms.filter(f => targetFormIds.includes(f.formId) && f.isRequired)
     
     if (formsToCheck.length === 0) return 0
     const submittedCount = formsToCheck.filter(f => f.submitted).length
     return Math.round((submittedCount / formsToCheck.length) * 100)
-  }
+  }, [targetForms])
 
   // チーム一覧の抽出
   const teams = useMemo(() => {
@@ -145,7 +144,7 @@ export default function SubmissionsPage() {
     })
 
     return items
-  }, [data, selectedTeam, sortConfig, targetForms])
+  }, [data, selectedTeam, sortConfig, calculateSubmissionRate])
 
   if (loading) {
     return (
@@ -190,7 +189,7 @@ export default function SubmissionsPage() {
   const myself = statuses[0] 
   const normalize = (s: string) => s ? s.replace(/[\s　]+/g, "").trim().toLowerCase() : ""
 
-  // 管理対象フォームの抽出（allFormsを使っているのでここも新しい順になる）
+  // 管理対象フォームの抽出
   const managedForms = allForms.filter(f => {
     if (!f.creator) return false
     return normalize(f.creator) === normalize(myself.userName)
@@ -206,7 +205,7 @@ export default function SubmissionsPage() {
         </p>
       </div>
 
-      {/* 管理者用セクション: 自分が作成したフォームがある場合のみ表示 */}
+      {/* 管理者用セクション */}
       {managedForms.length > 0 && (
         <Card className="bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
           <CardHeader className="pb-3">
@@ -243,9 +242,24 @@ export default function SubmissionsPage() {
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-col md:flex-row gap-4">
-          
+            <div className="w-full md:w-1/2">
+              <label className="text-sm font-medium mb-1 block text-muted-foreground">チームで絞り込み</label>
+              <div className="relative">
+                <select
+                  className="w-full h-10 px-3 py-2 rounded-md border border-input bg-background text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 appearance-none"
+                  value={selectedTeam}
+                  onChange={(e) => setSelectedTeam(e.target.value)}
+                >
+                  <option value="all">全チーム表示</option>
+                  {teams.map(team => (
+                    <option key={team} value={team}>{team}</option>
+                  ))}
+                </select>
+                <Filter className="absolute right-3 top-3 h-4 w-4 text-muted-foreground pointer-events-none" />
+              </div>
+            </div>
 
-            <div className="w-full">
+            <div className="w-full md:w-1/2">
               <label className="text-sm font-medium mb-1 block text-muted-foreground">フォームを表示</label>
               <div className="relative">
                 <select
@@ -296,28 +310,49 @@ export default function SubmissionsPage() {
                     </>
                   )}
                   
-                  {targetForms.map((form) => (
-                    <TableHead key={form.formId} className="text-center min-w-[120px] align-top py-4">
-                      <div className="flex flex-col items-center gap-1">
-                        <a 
-                          href={form.formUrl} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="flex items-center justify-center gap-1 hover:underline hover:text-primary transition-colors font-semibold"
-                          title="Googleフォームを開く"
-                        >
-                          {form.formName}
-                          <ExternalLink className="h-3 w-3 opacity-50" />
-                        </a>
-                        {form.deadline && (
-                          <div className="flex items-center text-xs text-muted-foreground font-normal">
-                            <Calendar className="h-3 w-3 mr-1" />
-                            {form.deadline}
-                          </div>
-                        )}
-                      </div>
-                    </TableHead>
-                  ))}
+                  {/* ■ 修正: 対象者かどうかでリンクを出し分ける */}
+                  {targetForms.map((form) => {
+                    // 自分自身(myself)のこのフォームのステータスを確認
+                    const myFormStatus = myself.forms.find(f => f.formId === form.formId)
+                    // isRequired が true なら対象者
+                    const isTargetForMe = myFormStatus?.isRequired
+
+                    return (
+                      <TableHead key={form.formId} className="text-center min-w-[120px] align-top py-4">
+                        <div className="flex flex-col items-center gap-1">
+                          {isTargetForMe ? (
+                            // 対象者ならリンクを表示
+                            <a 
+                              href={form.formUrl} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="flex items-center justify-center gap-1 hover:underline hover:text-primary transition-colors font-semibold"
+                              title="Googleフォームを開く"
+                            >
+                              {form.formName}
+                              <ExternalLink className="h-3 w-3 opacity-50" />
+                            </a>
+                          ) : (
+                            // 対象外ならグレーアウトしてリンクなし
+                            <div 
+                              className="flex items-center justify-center gap-1 text-muted-foreground/50 cursor-not-allowed"
+                              title="あなたはこのフォームの対象ではありません"
+                            >
+                              <span className="font-medium">{form.formName}</span>
+                              <Lock className="h-3 w-3 opacity-50" />
+                            </div>
+                          )}
+                          
+                          {form.deadline && (
+                            <div className="flex items-center text-xs text-muted-foreground font-normal">
+                              <Calendar className="h-3 w-3 mr-1" />
+                              {form.deadline}
+                            </div>
+                          )}
+                        </div>
+                      </TableHead>
+                    )
+                  })}
                   
                   <TableHead className="text-center min-w-[100px] align-top py-4">
                     <Button 
@@ -409,6 +444,49 @@ export default function SubmissionsPage() {
           </div>
         </CardContent>
       </Card>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">総ユーザー数</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{statuses.length}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">
+              {selectedForm === "all" ? "全提出完了" : "提出済み"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-green-600 dark:text-green-400">
+              {processedStatuses.filter((s) => {
+                 const targetFormIds = targetForms.map(f => f.formId)
+                 return s.forms
+                   .filter(f => targetFormIds.includes(f.formId) && f.isRequired)
+                   .every(f => f.submitted)
+              }).length}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">未提出あり</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-red-600 dark:text-red-400">
+              {processedStatuses.filter((s) => {
+                 const targetFormIds = targetForms.map(f => f.formId)
+                 return s.forms
+                   .filter(f => targetFormIds.includes(f.formId) && f.isRequired)
+                   .some(f => !f.submitted)
+              }).length}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   )
 }
