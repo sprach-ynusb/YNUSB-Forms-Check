@@ -242,24 +242,9 @@ export default function SubmissionsPage() {
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-col md:flex-row gap-4">
-            <div className="w-full md:w-1/2">
-              <label className="text-sm font-medium mb-1 block text-muted-foreground">チームで絞り込み</label>
-              <div className="relative">
-                <select
-                  className="w-full h-10 px-3 py-2 rounded-md border border-input bg-background text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 appearance-none"
-                  value={selectedTeam}
-                  onChange={(e) => setSelectedTeam(e.target.value)}
-                >
-                  <option value="all">全チーム表示</option>
-                  {teams.map(team => (
-                    <option key={team} value={team}>{team}</option>
-                  ))}
-                </select>
-                <Filter className="absolute right-3 top-3 h-4 w-4 text-muted-foreground pointer-events-none" />
-              </div>
-            </div>
+            
 
-            <div className="w-full md:w-1/2">
+            <div className="w-full">
               <label className="text-sm font-medium mb-1 block text-muted-foreground">フォームを表示</label>
               <div className="relative">
                 <select
@@ -445,48 +430,7 @@ export default function SubmissionsPage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">総ユーザー数</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold">{statuses.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">
-              {selectedForm === "all" ? "全提出完了" : "提出済み"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-green-600 dark:text-green-400">
-              {processedStatuses.filter((s) => {
-                 const targetFormIds = targetForms.map(f => f.formId)
-                 return s.forms
-                   .filter(f => targetFormIds.includes(f.formId) && f.isRequired)
-                   .every(f => f.submitted)
-              }).length}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">未提出あり</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-red-600 dark:text-red-400">
-              {processedStatuses.filter((s) => {
-                 const targetFormIds = targetForms.map(f => f.formId)
-                 return s.forms
-                   .filter(f => targetFormIds.includes(f.formId) && f.isRequired)
-                   .some(f => !f.submitted)
-              }).length}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+      
     </div>
   )
 }
