@@ -71,6 +71,7 @@ function extractSpreadsheetId(input: string): string {
   return match && match[1] ? match[1] : input
 }
 
+// 認証機能
 export async function authenticateUser(name: string, password: string) {
   const managementId = process.env.GOOGLE_MANAGEMENT_SHEET_ID
   if (!managementId) return null
@@ -133,7 +134,7 @@ export async function updatePassword(name: string, newPassword: string): Promise
   }
 }
 
-// ■ 提出状況計算（ターゲットフォーム指定対応版）
+// ■ 提出状況計算（あだ名対応版）
 export async function calculateSubmissionStatus(viewerName: string, targetFormId?: string): Promise<SubmissionStatus[]> {
   const managementId = process.env.GOOGLE_MANAGEMENT_SHEET_ID
   if (!managementId) throw new Error("環境変数 GOOGLE_MANAGEMENT_SHEET_ID がありません")
@@ -161,19 +162,31 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     }
   }).filter(f => f !== null) as { name: string, id: string, sheetName?: string, url: string, targetGroups: string, deadline: string, creator: string }[]
 
-  // 2. 名簿データのパース
+  // 2. 名簿データのパース（あだ名列の検出を追加）
   const header = rosterData[0] || []
   const nameIdx = header.findIndex(c => c.includes("名前") || c.includes("氏名"))
   const roleIdx = header.findIndex(c => c.includes("権限"))
   const teamIdx = header.findIndex(c => c.includes("チーム"))
   const groupIdx = header.findIndex(c => c.includes("グループ") || c.includes("Group"))
+  
+  // ■ あだ名列の検出（G列固定ではなく、ヘッダー名で探す）
+  const nicknameIdx = header.findIndex(c => 
+    c.includes("あだ名") || 
+    c.includes("ニックネーム") || 
+    c.includes("Nickname") ||
+    c.includes("通称")
+  )
+  
   const safeNameIdx = nameIdx === -1 ? 0 : nameIdx
 
   const allUsers = rosterData.slice(1).map(row => {
     const name = row[safeNameIdx] || "不明"
+    const nickname = nicknameIdx !== -1 ? (row[nicknameIdx] || "") : ""
+    
     return {
       rawName: name,
       normalizedName: normalizeName(name),
+      normalizedNickname: normalizeName(nickname), // あだ名も正規化して保持
       role: roleIdx !== -1 ? safeTrim(row[roleIdx]) || "一般" : "一般",
       team: teamIdx !== -1 ? safeTrim(row[teamIdx]) || "" : "",
       group: groupIdx !== -1 ? safeTrim(row[groupIdx]) || "" : "", 
@@ -186,13 +199,10 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
   const viewer = allUsers.find(u => u.normalizedName === normalizedViewerName)
   if (!viewer) return []
 
-  // ■■■ 権限ロジックの修正箇所 ■■■
+  // 権限ロジック
   let targetUsers: typeof allUsers = []
-
-  // A. 全体管理者なら常に全員
   const isGlobalAdmin = viewer.role.includes("全体") || viewer.role.includes("管理") || viewer.role.includes("admin")
 
-  // B. 特定のフォーム詳細を見ようとしていて、その作成者である場合 → 全員
   let isTargetFormCreator = false
   if (targetFormId) {
     const targetForm = forms.find(f => f.id === targetFormId)
@@ -202,24 +212,19 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
   }
 
   if (isGlobalAdmin || isTargetFormCreator) {
-    // 全員表示
     targetUsers = allUsers
   } else {
-    // 通常表示（トップページなど）
     if (viewer.role.includes("リーダー") || viewer.role.includes("Leader")) {
-      // チームリーダーなら自チームのみ
       if (viewer.team) {
         targetUsers = allUsers.filter(u => u.team === viewer.team)
       } else {
         targetUsers = [viewer]
       }
     } else {
-      // 一般ユーザーは自分のみ
       targetUsers = [viewer]
     }
   }
 
-  // ソート
   targetUsers.sort((a, b) => {
     if (a.normalizedName === viewer.normalizedName) return -1
     if (b.normalizedName === viewer.normalizedName) return 1
@@ -248,22 +253,36 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     formSubmissions.set(form.name, set)
   }
 
-  // 5. 組み立て
+  // 5. 組み立て（あだ名判定を追加）
   return targetUsers.map(user => {
     const userForms = forms.map(form => {
       const submittedSet = formSubmissions.get(form.name)
       let isSubmitted = false
+      
       if (submittedSet) {
+        // パターン1: 本名で完全一致
         if (submittedSet.has(user.normalizedName)) {
           isSubmitted = true
-        } else {
+        } 
+        // パターン2: あだ名で完全一致 (あだ名がある場合のみ)
+        else if (user.normalizedNickname && submittedSet.has(user.normalizedNickname)) {
+          isSubmitted = true
+        }
+        else {
+          // パターン3: 部分一致 (本名またはあだ名が含まれているか)
           for (const submittedName of submittedSet) {
             if (submittedName.includes(user.normalizedName)) {
-              isSubmitted = true; break
+              isSubmitted = true
+              break
+            }
+            if (user.normalizedNickname && submittedName.includes(user.normalizedNickname)) {
+              isSubmitted = true
+              break
             }
           }
         }
       }
+      
       let isRequired = true
       if (form.targetGroups) {
         const allowedGroups = form.targetGroups.split(/[,、\s]+/).map(g => g.trim()).filter(g => g)
