@@ -131,7 +131,7 @@ export async function updatePassword(name: string, newPassword: string): Promise
   }
 }
 
-// ■ 完成版（回答シートのあだ名列対応）
+// ■ デバッグ版: フォームのヘッダーをログに出力
 export async function calculateSubmissionStatus(viewerName: string, targetFormId?: string): Promise<SubmissionStatus[]> {
   const managementId = process.env.GOOGLE_MANAGEMENT_SHEET_ID
   if (!managementId) throw new Error("環境変数 GOOGLE_MANAGEMENT_SHEET_ID がありません")
@@ -179,14 +179,14 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     }
   }).filter(u => u.normalizedName !== "")
 
-  // 3. 閲覧者特定と表示範囲決定
+  // 3. 閲覧者特定
   const normalizedViewerName = normalizeName(viewerName)
   const viewer = allUsers.find(u => u.normalizedName === normalizedViewerName)
   if (!viewer) return []
 
+  // 権限判定
   let targetUsers: typeof allUsers = []
   const isGlobalAdmin = viewer.role.includes("全体") || viewer.role.includes("管理") || viewer.role.includes("admin")
-
   let isTargetFormCreator = false
   if (targetFormId) {
     const targetForm = forms.find(f => f.id === targetFormId)
@@ -215,19 +215,28 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     return a.normalizedName.localeCompare(b.normalizedName, "ja")
   })
 
-  // 4. 回答状況取得
-  const getSubmittedNames = async (id: string, sheetName?: string) => {
+  // 4. 回答状況取得（デバッグ強化版）
+  const getSubmittedNames = async (id: string, formName: string, sheetName?: string) => {
     const range = sheetName ? `${sheetName}!A:Z` : "A:Z"
     const data = await getSheetData(id, range)
     if (data.length < 2) return new Set<string>()
-    const header = data[0]
-
-    // ■ 修正: 回答シート側も「あだ名」を探すように変更
-    let nameIdx = header.findIndex(c => c.includes("名前") || c.includes("氏名") || c.includes("name") || c.includes("Name"))
     
-    // なければ「あだ名」を探す
+    const header = data[0]
+    
+    // ▼ ヘッダーのスペースを除去して正規化してからチェックするように改良
+    const normalizedHeader = header.map(h => h.replace(/[\s　]+/g, ""))
+    
+    // ▼ デバッグログ: フォーム側のヘッダーを表示
+    console.log(`[Form: ${formName}] Headers:`, header)
+
+    // 優先度1: 明示的な「名前」
+    let nameIdx = normalizedHeader.findIndex(c => 
+      c.includes("名前") || c.includes("氏名") || c.includes("Name") || c.includes("name")
+    )
+    
+    // 優先度2: 明示的な「あだ名」
     if (nameIdx === -1) {
-      nameIdx = header.findIndex(c => 
+      nameIdx = normalizedHeader.findIndex(c => 
         c.includes("あだ名") || 
         c.includes("ニックネーム") || 
         c.includes("Nickname") ||
@@ -235,10 +244,11 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
       )
     }
 
-    // それでもなければ、B列(index 1)を採用（Googleフォームの定石）
-    if (nameIdx === -1 && header.length > 1) nameIdx = 1
-    // 万が一1列しかなければA列
-    if (nameIdx === -1) nameIdx = 0
+    // 優先度3: なければ2列目（Googleフォームの定石）
+    if (nameIdx === -1 && header.length > 1) {
+      console.log(`[Form: ${formName}] 名前列が見つからないためB列(index 1)を使用します`)
+      nameIdx = 1
+    }
 
     const set = new Set<string>()
     if (nameIdx !== -1) {
@@ -251,7 +261,8 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
 
   const formSubmissions = new Map<string, Set<string>>()
   for (const form of forms) {
-    const set = await getSubmittedNames(form.id, form.sheetName)
+    // フォーム名も渡してログに出す
+    const set = await getSubmittedNames(form.id, form.name, form.sheetName)
     formSubmissions.set(form.name, set)
   }
 
@@ -261,15 +272,11 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
       const submittedSet = formSubmissions.get(form.name)
       let isSubmitted = false
       if (submittedSet) {
-        // 本名チェック
         if (submittedSet.has(user.normalizedName)) {
           isSubmitted = true
-        } 
-        // あだ名チェック
-        else if (user.normalizedNickname && submittedSet.has(user.normalizedNickname)) {
+        } else if (user.normalizedNickname && submittedSet.has(user.normalizedNickname)) {
           isSubmitted = true
         } else {
-          // 部分一致チェック（本名 or あだ名）
           for (const submittedName of submittedSet) {
             if (submittedName.includes(user.normalizedName)) {
               isSubmitted = true; break
