@@ -131,7 +131,7 @@ export async function updatePassword(name: string, newPassword: string): Promise
   }
 }
 
-// ■ デバッグ版: フォームのヘッダーをログに出力
+// ■ 完成版: 複数列スキャン対応
 export async function calculateSubmissionStatus(viewerName: string, targetFormId?: string): Promise<SubmissionStatus[]> {
   const managementId = process.env.GOOGLE_MANAGEMENT_SHEET_ID
   if (!managementId) throw new Error("環境変数 GOOGLE_MANAGEMENT_SHEET_ID がありません")
@@ -160,9 +160,16 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
   const roleIdx = header.findIndex(c => c.includes("権限"))
   const teamIdx = header.findIndex(c => c.includes("チーム"))
   const groupIdx = header.findIndex(c => c.includes("グループ") || c.includes("Group"))
+  
+  // あだ名列の検出（ヘッダーから探す）
   const nicknameIdx = header.findIndex(c => 
-    c.includes("あだ名") || c.includes("ニックネーム") || c.includes("Nickname") || c.includes("通称") || c.includes("呼称")
+    c.includes("あだ名") || 
+    c.includes("ニックネーム") || 
+    c.includes("Nickname") ||
+    c.includes("通称") ||
+    c.includes("呼称")
   )
+  
   const safeNameIdx = nameIdx === -1 ? 0 : nameIdx
 
   const allUsers = rosterData.slice(1).map(row => {
@@ -179,12 +186,11 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     }
   }).filter(u => u.normalizedName !== "")
 
-  // 3. 閲覧者特定
+  // 3. 閲覧者特定と表示範囲決定
   const normalizedViewerName = normalizeName(viewerName)
   const viewer = allUsers.find(u => u.normalizedName === normalizedViewerName)
   if (!viewer) return []
 
-  // 権限判定
   let targetUsers: typeof allUsers = []
   const isGlobalAdmin = viewer.role.includes("全体") || viewer.role.includes("管理") || viewer.role.includes("admin")
   let isTargetFormCreator = false
@@ -215,7 +221,7 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     return a.normalizedName.localeCompare(b.normalizedName, "ja")
   })
 
-  // 4. 回答状況取得（デバッグ強化版）
+  // 4. 回答状況取得（複数列スキャン）
   const getSubmittedNames = async (id: string, formName: string, sheetName?: string) => {
     const range = sheetName ? `${sheetName}!A:Z` : "A:Z"
     const data = await getSheetData(id, range)
@@ -223,45 +229,39 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     
     const header = data[0]
     
-    // ▼ ヘッダーのスペースを除去して正規化してからチェックするように改良
-    const normalizedHeader = header.map(h => h.replace(/[\s　]+/g, ""))
+    // ■ 修正ポイント：1列に絞らず、キーワードにヒットする列を「すべて」対象にする
+    const targetIndices: number[] = []
     
-    // ▼ デバッグログ: フォーム側のヘッダーを表示
-    console.log(`[Form: ${formName}] Headers:`, header)
+    header.forEach((colName, index) => {
+      // 検索キーワード
+      const keywords = ["名前", "氏名", "Name", "name", "あだ名", "ニックネーム", "Nickname", "通称", "呼称"]
+      const isMatch = keywords.some(keyword => colName.includes(keyword))
+      
+      if (isMatch) {
+        targetIndices.push(index)
+      }
+    })
 
-    // 優先度1: 明示的な「名前」
-    let nameIdx = normalizedHeader.findIndex(c => 
-      c.includes("名前") || c.includes("氏名") || c.includes("Name") || c.includes("name")
-    )
+    // もし何も見つからなければ、慣例的に2列目(index 1)を追加
+    if (targetIndices.length === 0 && header.length > 1) {
+      targetIndices.push(1)
+    }
     
-    // 優先度2: 明示的な「あだ名」
-    if (nameIdx === -1) {
-      nameIdx = normalizedHeader.findIndex(c => 
-        c.includes("あだ名") || 
-        c.includes("ニックネーム") || 
-        c.includes("Nickname") ||
-        c.includes("通称")
-      )
-    }
-
-    // 優先度3: なければ2列目（Googleフォームの定石）
-    if (nameIdx === -1 && header.length > 1) {
-      console.log(`[Form: ${formName}] 名前列が見つからないためB列(index 1)を使用します`)
-      nameIdx = 1
-    }
-
+    // 見つかった列すべての値をSetに格納
     const set = new Set<string>()
-    if (nameIdx !== -1) {
-      for (let i = 1; i < data.length; i++) {
-        if (data[i][nameIdx]) set.add(normalizeName(data[i][nameIdx]))
+    for (let i = 1; i < data.length; i++) {
+      for (const idx of targetIndices) {
+        if (data[i][idx]) {
+          set.add(normalizeName(data[i][idx]))
+        }
       }
     }
+    
     return set
   }
 
   const formSubmissions = new Map<string, Set<string>>()
   for (const form of forms) {
-    // フォーム名も渡してログに出す
     const set = await getSubmittedNames(form.id, form.name, form.sheetName)
     formSubmissions.set(form.name, set)
   }
