@@ -1,6 +1,5 @@
 import { google } from "googleapis"
 
-// Next.jsのビルドエラー回避用
 export const runtime = "nodejs"
 
 // 型定義
@@ -24,7 +23,6 @@ export interface SubmissionStatus {
   forms: FormStatus[]
 }
 
-// 初期設定
 function getSheetsClient() {
   let privateKey = process.env.GOOGLE_PRIVATE_KEY
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !privateKey) {
@@ -71,7 +69,6 @@ function extractSpreadsheetId(input: string): string {
   return match && match[1] ? match[1] : input
 }
 
-// 認証機能
 export async function authenticateUser(name: string, password: string) {
   const managementId = process.env.GOOGLE_MANAGEMENT_SHEET_ID
   if (!managementId) return null
@@ -134,7 +131,7 @@ export async function updatePassword(name: string, newPassword: string): Promise
   }
 }
 
-// ■ 提出状況計算（あだ名対応版）
+// ■ デバッグログ付き提出状況計算
 export async function calculateSubmissionStatus(viewerName: string, targetFormId?: string): Promise<SubmissionStatus[]> {
   const managementId = process.env.GOOGLE_MANAGEMENT_SHEET_ID
   if (!managementId) throw new Error("環境変数 GOOGLE_MANAGEMENT_SHEET_ID がありません")
@@ -150,33 +147,37 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     const targetGroups = row[3] ? safeTrim(row[3]) : "" 
     const deadline = row[4] ? safeTrim(row[4]) : ""     
     const creator = row[5] ? safeTrim(row[5]) : ""
-
     if (!name || !rawIdInput) return null
     const extractedId = extractSpreadsheetId(rawIdInput)
     const isUrlFormat = rawIdInput.includes("http") || rawIdInput.includes("spreadsheets")
     const isSheetName = !isUrlFormat && extractedId.length < 30 
-    return { 
-      name, id: isSheetName ? managementId : extractedId, 
-      sheetName: isSheetName ? extractedId : undefined, 
-      url, targetGroups, deadline, creator
-    }
+    return { name, id: isSheetName ? managementId : extractedId, sheetName: isSheetName ? extractedId : undefined, url, targetGroups, deadline, creator }
   }).filter(f => f !== null) as { name: string, id: string, sheetName?: string, url: string, targetGroups: string, deadline: string, creator: string }[]
 
-  // 2. 名簿データのパース（あだ名列の検出を追加）
+  // 2. 名簿データのパース
   const header = rosterData[0] || []
+  
+  // ▼▼▼ デバッグログ ▼▼▼
+  console.log("=== DEBUG: 名簿ヘッダー検出 ===")
+  console.log("ヘッダー全列:", header)
+  
   const nameIdx = header.findIndex(c => c.includes("名前") || c.includes("氏名"))
   const roleIdx = header.findIndex(c => c.includes("権限"))
   const teamIdx = header.findIndex(c => c.includes("チーム"))
   const groupIdx = header.findIndex(c => c.includes("グループ") || c.includes("Group"))
   
-  // ■ あだ名列の検出（G列固定ではなく、ヘッダー名で探す）
+  // あだ名列の検出（キーワードを強化）
   const nicknameIdx = header.findIndex(c => 
     c.includes("あだ名") || 
     c.includes("ニックネーム") || 
     c.includes("Nickname") ||
-    c.includes("通称")
+    c.includes("通称") ||
+    c.includes("呼称")
   )
   
+  console.log(`検出インデックス - 名前:${nameIdx}, あだ名:${nicknameIdx}, チーム:${teamIdx}`)
+  // ▲▲▲ デバッグログ終わり ▲▲▲
+
   const safeNameIdx = nameIdx === -1 ? 0 : nameIdx
 
   const allUsers = rosterData.slice(1).map(row => {
@@ -186,7 +187,7 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     return {
       rawName: name,
       normalizedName: normalizeName(name),
-      normalizedNickname: normalizeName(nickname), // あだ名も正規化して保持
+      normalizedNickname: normalizeName(nickname),
       role: roleIdx !== -1 ? safeTrim(row[roleIdx]) || "一般" : "一般",
       team: teamIdx !== -1 ? safeTrim(row[teamIdx]) || "" : "",
       group: groupIdx !== -1 ? safeTrim(row[groupIdx]) || "" : "", 
@@ -199,7 +200,6 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
   const viewer = allUsers.find(u => u.normalizedName === normalizedViewerName)
   if (!viewer) return []
 
-  // 権限ロジック
   let targetUsers: typeof allUsers = []
   const isGlobalAdmin = viewer.role.includes("全体") || viewer.role.includes("管理") || viewer.role.includes("admin")
 
@@ -238,6 +238,10 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     if (data.length < 2) return new Set<string>()
     let nameIdx = data[0].findIndex(c => c.includes("名前") || c.includes("氏名") || c.includes("name"))
     if (nameIdx === -1 && data[0].length > 1) nameIdx = 1
+    
+    // ▼ フォーム側の列検出ログ
+    // console.log(`Form[${id}] NameCol:${nameIdx} Headers:${data[0]}`)
+    
     const set = new Set<string>()
     if (nameIdx !== -1) {
       for (let i = 1; i < data.length; i++) {
@@ -253,31 +257,26 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     formSubmissions.set(form.name, set)
   }
 
-  // 5. 組み立て（あだ名判定を追加）
+  // 5. 組み立て
   return targetUsers.map(user => {
     const userForms = forms.map(form => {
       const submittedSet = formSubmissions.get(form.name)
       let isSubmitted = false
       
       if (submittedSet) {
-        // パターン1: 本名で完全一致
         if (submittedSet.has(user.normalizedName)) {
           isSubmitted = true
         } 
-        // パターン2: あだ名で完全一致 (あだ名がある場合のみ)
         else if (user.normalizedNickname && submittedSet.has(user.normalizedNickname)) {
           isSubmitted = true
         }
         else {
-          // パターン3: 部分一致 (本名またはあだ名が含まれているか)
           for (const submittedName of submittedSet) {
             if (submittedName.includes(user.normalizedName)) {
-              isSubmitted = true
-              break
+              isSubmitted = true; break
             }
             if (user.normalizedNickname && submittedName.includes(user.normalizedNickname)) {
-              isSubmitted = true
-              break
+              isSubmitted = true; break
             }
           }
         }
@@ -289,23 +288,13 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
         isRequired = allowedGroups.includes(user.group)
       }
       return {
-        formId: form.id,
-        formName: form.name,
-        formUrl: form.url,
-        deadline: form.deadline,
-        submitted: isSubmitted,
-        isRequired: isRequired,
-        creator: form.creator
+        formId: form.id, formName: form.name, formUrl: form.url, deadline: form.deadline,
+        submitted: isSubmitted, isRequired: isRequired, creator: form.creator
       }
     })
     return {
-      userId: user.normalizedName,
-      userName: user.rawName,
-      userRole: user.role,
-      userTeam: user.team,
-      userGroup: user.group,
-      userEmail: user.email,
-      forms: userForms
+      userId: user.normalizedName, userName: user.rawName, userRole: user.role,
+      userTeam: user.team, userGroup: user.group, userEmail: user.email, forms: userForms
     }
   })
 }
