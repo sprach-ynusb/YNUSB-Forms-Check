@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Loader2, ArrowLeft, CheckCircle2, XCircle, BarChart3 } from "lucide-react"
 import { SubmissionStatus } from "@/lib/google-sheets"
-// ■ グラフ用ライブラリを追加
+// グラフ用ライブラリ
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts"
 
 export default function FormDetailPage() {
@@ -83,14 +83,24 @@ export default function FormDetailPage() {
   // チーム名でソート
   teams.sort((a, b) => a.name.localeCompare(b.name, "ja"))
 
-  // ■ 3. グラフ用データの生成
-  const teamStats = teams.map(team => ({
-    name: team.name,
-    提出済: team.stats.submitted,
-    未提出: team.stats.total - team.stats.submitted,
-    rate: team.stats.rate,
-    total: team.stats.total
-  })).filter(stat => stat.total > 0).sort((a, b) => a.rate - b.rate) // 提出率が低い順に並べ替え
+  // ■ 3. グラフ用データの生成（100%積み上げ用）
+  const teamStats = teams.map(team => {
+    const unsubmitted = team.stats.total - team.stats.submitted
+    
+    // パーセンテージを計算（小数点第1位まで）
+    const submittedPct = team.stats.total > 0 ? Number(((team.stats.submitted / team.stats.total) * 100).toFixed(1)) : 0
+    const unsubmittedPct = team.stats.total > 0 ? Number(((unsubmitted / team.stats.total) * 100).toFixed(1)) : 0
+
+    return {
+      name: team.name,
+      提出済: submittedPct,
+      未提出: unsubmittedPct,
+      submittedCount: team.stats.submitted,
+      unsubmittedCount: unsubmitted,
+      rate: team.stats.rate,
+      total: team.stats.total
+    }
+  }).filter(stat => stat.total > 0).sort((a, b) => a.rate - b.rate)
 
   return (
     <div className="space-y-6">
@@ -104,7 +114,7 @@ export default function FormDetailPage() {
         </div>
       </div>
 
-      {/* ■ チーム別提出状況グラフを追加 */}
+      {/* ■ チーム別提出状況グラフ（100%積み上げ） */}
       {teamStats.length > 0 && (
         <Card>
           <CardHeader>
@@ -112,7 +122,7 @@ export default function FormDetailPage() {
               <BarChart3 className="h-5 w-5 text-primary" />
               チーム別提出状況
             </CardTitle>
-            <CardDescription>各チームの提出率（要注意チーム順）</CardDescription>
+            <CardDescription>各チームの提出割合（要注意チーム順）</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="h-[300px] w-full mt-4">
@@ -126,13 +136,25 @@ export default function FormDetailPage() {
                     height={60} 
                     tick={{ fontSize: 12 }} 
                   />
-                  <YAxis allowDecimals={false} />
+                  <YAxis domain={[0, 100]} tickFormatter={(tick) => `${tick}%`} />
+                  
+                  {/* ■ 修正: any型を使用してTypeScriptのエラーを回避 */}
                   <Tooltip 
                     cursor={{fill: 'transparent'}}
                     contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0' }}
+                    formatter={(value: any, name: any, props: any) => {
+                      const payload = props.payload
+                      if (name === "提出済") {
+                        return [`${value}% (${payload.submittedCount}人)`, name]
+                      }
+                      if (name === "未提出") {
+                        return [`${value}% (${payload.unsubmittedCount}人)`, name]
+                      }
+                      return [value, name]
+                    }}
                   />
                   <Legend verticalAlign="top" height={36}/>
-                  <Bar dataKey="提出済" stackId="a" fill="#22c55e" radius={[0, 0, 4, 4]} />
+                  <Bar dataKey="提出済" stackId="a" fill="#22c55e" radius={[0, 0, 0, 0]} />
                   <Bar dataKey="未提出" stackId="a" fill="#ef4444" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
