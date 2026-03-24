@@ -14,7 +14,10 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { SubmissionStatus } from "@/lib/google-sheets"
-import { Loader2, AlertCircle, Settings, ChevronRight, Minus, ArrowUpDown, ExternalLink, Filter, Calendar, Lock } from "lucide-react"
+import { Loader2, AlertCircle, Settings, ChevronRight, Minus, ArrowUpDown, ExternalLink, Filter, Calendar, Lock, BarChart3 } from "lucide-react"
+
+// グラフ用ライブラリ
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts"
 
 interface SubmissionStatusResponse {
   statuses: SubmissionStatus[]
@@ -68,7 +71,6 @@ export default function SubmissionsPage() {
     fetchData()
   }, [])
 
-  // ソートハンドラー
   const handleSort = (key: "name" | "rate") => {
     setSortConfig((current) => {
       if (current?.key === key) {
@@ -78,13 +80,11 @@ export default function SubmissionsPage() {
     })
   }
 
-  // フォーム一覧の取得（新しい順に並び替え）
   const allForms = useMemo(() => {
     if (!data || data.statuses.length === 0) return []
     return [...data.statuses[0].forms].reverse()
   }, [data])
 
-  // 表示するフォーム列の決定
   const targetForms = useMemo(() => {
     if (selectedForm === "all") {
       return allForms
@@ -92,7 +92,6 @@ export default function SubmissionsPage() {
     return allForms.filter(f => f.formId === selectedForm)
   }, [allForms, selectedForm])
 
-  // 提出率計算ヘルパー
   const calculateSubmissionRate = useCallback((userStatus: SubmissionStatus) => {
     const targetFormIds = targetForms.map(f => f.formId)
     const formsToCheck = userStatus.forms.filter(f => targetFormIds.includes(f.formId) && f.isRequired)
@@ -102,26 +101,22 @@ export default function SubmissionsPage() {
     return Math.round((submittedCount / formsToCheck.length) * 100)
   }, [targetForms])
 
-  // チーム一覧の抽出
   const teams = useMemo(() => {
     if (!data) return []
     const allTeams = data.statuses.map(s => s.userTeam).filter(t => t && t !== "")
     return Array.from(new Set(allTeams)).sort()
   }, [data])
 
-  // メインロジック
   const processedStatuses = useMemo(() => {
     if (!data) return []
     let items = [...data.statuses]
 
     const currentUserId = data.statuses.length > 0 ? data.statuses[0].userId : null
 
-    // チーム絞り込み
     if (selectedTeam && selectedTeam !== "all") {
       items = items.filter(item => item.userTeam === selectedTeam)
     }
 
-    // ソート処理（自分は常に最上位）
     items.sort((a, b) => {
       if (a.userId === currentUserId) return -1
       if (b.userId === currentUserId) return 1
@@ -145,6 +140,47 @@ export default function SubmissionsPage() {
 
     return items
   }, [data, selectedTeam, sortConfig, calculateSubmissionRate])
+
+  // ■ チーム別集計ロジック（グラフ用）
+  const teamStats = useMemo(() => {
+    if (!data || data.statuses.length === 0) return []
+    
+    // 現在絞り込まれているフォーム（targetForms）を対象に集計
+    const statsMap = new Map<string, { total: number, submitted: number }>()
+
+    // data.statuses は全ユーザー（管理者の場合全員分取得できている）
+    data.statuses.forEach(user => {
+      const team = user.userTeam || "未所属"
+      if (!statsMap.has(team)) {
+        statsMap.set(team, { total: 0, submitted: 0 })
+      }
+      
+      const teamData = statsMap.get(team)!
+      
+      targetForms.forEach(tf => {
+        const form = user.forms.find(f => f.formId === tf.formId)
+        if (form && form.isRequired) {
+          teamData.total += 1
+          if (form.submitted) {
+            teamData.submitted += 1
+          }
+        }
+      })
+    })
+
+    return Array.from(statsMap.entries())
+      .map(([team, stats]) => ({
+        name: team,
+        提出済: stats.submitted,
+        未提出: stats.total - stats.submitted,
+        rate: stats.total > 0 ? Math.round((stats.submitted / stats.total) * 100) : 0,
+        total: stats.total
+      }))
+      // 合計対象フォームが0のチームはグラフから除外
+      .filter(stat => stat.total > 0)
+      // 提出率が低い順（要注意なチーム順）にソート
+      .sort((a, b) => a.rate - b.rate)
+  }, [data, targetForms])
 
   if (loading) {
     return (
@@ -189,11 +225,13 @@ export default function SubmissionsPage() {
   const myself = statuses[0] 
   const normalize = (s: string) => s ? s.replace(/[\s　]+/g, "").trim().toLowerCase() : ""
 
-  // 管理対象フォームの抽出
   const managedForms = allForms.filter(f => {
     if (!f.creator) return false
     return normalize(f.creator) === normalize(myself.userName)
   })
+
+  // ■ 管理者かどうか判定
+  const isAdmin = currentUserRole.includes("管理") || currentUserRole.includes("admin") || currentUserRole.includes("全体")
 
   return (
     <div className="space-y-6">
@@ -205,7 +243,7 @@ export default function SubmissionsPage() {
         </p>
       </div>
 
-      {/* 管理者用セクション */}
+      {/* 管理者用セクション: 自分が作成したフォームがある場合のみ表示 */}
       {managedForms.length > 0 && (
         <Card className="bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
           <CardHeader className="pb-3">
@@ -238,13 +276,67 @@ export default function SubmissionsPage() {
         </Card>
       )}
 
+      {/* ■ 管理者限定：チーム別提出状況グラフ */}
+      {isAdmin && teamStats.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <BarChart3 className="h-5 w-5 text-primary" />
+              チーム別提出状況（管理者限定）
+            </CardTitle>
+            <CardDescription>
+              {selectedForm === "all" ? "すべての対象フォームの合算データ" : "選択中のフォームのデータ"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="h-[300px] w-full mt-4">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={teamStats} margin={{ top: 10, right: 30, left: 0, bottom: 30 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis 
+                    dataKey="name" 
+                    angle={-45} 
+                    textAnchor="end" 
+                    height={60} 
+                    tick={{ fontSize: 12 }} 
+                  />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip 
+                    cursor={{fill: 'transparent'}}
+                    contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0' }}
+                  />
+                  <Legend verticalAlign="top" height={36}/>
+                  <Bar dataKey="提出済" stackId="a" fill="#22c55e" radius={[0, 0, 4, 4]} />
+                  <Bar dataKey="未提出" stackId="a" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* フィルタリングバー */}
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-col md:flex-row gap-4">
-            
+            <div className="w-full md:w-1/2">
+              <label className="text-sm font-medium mb-1 block text-muted-foreground">チームで絞り込み</label>
+              <div className="relative">
+                <select
+                  className="w-full h-10 px-3 py-2 rounded-md border border-input bg-background text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 appearance-none"
+                  value={selectedTeam}
+                  onChange={(e) => setSelectedTeam(e.target.value)}
+                >
+                  <option value="all">全チーム表示</option>
+                  {teams.map(team => (
+                    <option key={team} value={team}>{team}</option>
+                  ))}
+                </select>
+                <Filter className="absolute right-3 top-3 h-4 w-4 text-muted-foreground pointer-events-none" />
+              </div>
+            </div>
 
-            <div className="w-full">
+            <div className="w-full md:w-1/2">
               <label className="text-sm font-medium mb-1 block text-muted-foreground">フォームを表示</label>
               <div className="relative">
                 <select
@@ -295,18 +387,14 @@ export default function SubmissionsPage() {
                     </>
                   )}
                   
-                  {/* ■ 修正: 対象者かどうかでリンクを出し分ける */}
                   {targetForms.map((form) => {
-                    // 自分自身(myself)のこのフォームのステータスを確認
                     const myFormStatus = myself.forms.find(f => f.formId === form.formId)
-                    // isRequired が true なら対象者
                     const isTargetForMe = myFormStatus?.isRequired
 
                     return (
                       <TableHead key={form.formId} className="text-center min-w-[120px] align-top py-4">
                         <div className="flex flex-col items-center gap-1">
                           {isTargetForMe ? (
-                            // 対象者ならリンクを表示
                             <a 
                               href={form.formUrl} 
                               target="_blank" 
@@ -318,7 +406,6 @@ export default function SubmissionsPage() {
                               <ExternalLink className="h-3 w-3 opacity-50" />
                             </a>
                           ) : (
-                            // 対象外ならグレーアウトしてリンクなし
                             <div 
                               className="flex items-center justify-center gap-1 text-muted-foreground/50 cursor-not-allowed"
                               title="あなたはこのフォームの対象ではありません"
@@ -430,7 +517,48 @@ export default function SubmissionsPage() {
         </CardContent>
       </Card>
 
-      
+      <div className="grid gap-4 md:grid-cols-3">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">総ユーザー数</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{statuses.length}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">
+              {selectedForm === "all" ? "全提出完了" : "提出済み"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-green-600 dark:text-green-400">
+              {processedStatuses.filter((s) => {
+                 const targetFormIds = targetForms.map(f => f.formId)
+                 return s.forms
+                   .filter(f => targetFormIds.includes(f.formId) && f.isRequired)
+                   .every(f => f.submitted)
+              }).length}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">未提出あり</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-red-600 dark:text-red-400">
+              {processedStatuses.filter((s) => {
+                 const targetFormIds = targetForms.map(f => f.formId)
+                 return s.forms
+                   .filter(f => targetFormIds.includes(f.formId) && f.isRequired)
+                   .some(f => !f.submitted)
+              }).length}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   )
 }
