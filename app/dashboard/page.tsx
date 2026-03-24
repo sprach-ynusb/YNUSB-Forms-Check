@@ -14,10 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { SubmissionStatus } from "@/lib/google-sheets"
-import { Loader2, AlertCircle, Settings, ChevronRight, Minus, ArrowUpDown, ExternalLink, Filter, Calendar, Lock, BarChart3 } from "lucide-react"
-
-// グラフ用ライブラリ
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts"
+import { Loader2, AlertCircle, Settings, ChevronRight, Minus, ArrowUpDown, ExternalLink, Filter, Calendar, Lock } from "lucide-react"
 
 interface SubmissionStatusResponse {
   statuses: SubmissionStatus[]
@@ -36,28 +33,15 @@ export default function SubmissionsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   
-  // フィルタリング用ステート
   const [selectedTeam, setSelectedTeam] = useState("all")
   const [selectedForm, setSelectedForm] = useState("all")
-
-  // ソート設定
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: "rate", direction: "asc" })
 
   useEffect(() => {
     async function fetchData() {
       try {
         const response = await fetch("/api/sheets/submission-status")
-        
-        if (!response.ok) {
-          let errorMessage = "データの取得に失敗しました"
-          try {
-            const errorData = await response.json()
-            errorMessage = errorData.error || errorMessage
-          } catch (e) {
-            errorMessage = `HTTP ${response.status}: ${response.statusText}`
-          }
-          throw new Error(errorMessage)
-        }
+        if (!response.ok) throw new Error("データの取得に失敗しました")
         const result = await response.json()
         setData(result)
       } catch (err) {
@@ -67,7 +51,6 @@ export default function SubmissionsPage() {
         setLoading(false)
       }
     }
-
     fetchData()
   }, [])
 
@@ -86,16 +69,13 @@ export default function SubmissionsPage() {
   }, [data])
 
   const targetForms = useMemo(() => {
-    if (selectedForm === "all") {
-      return allForms
-    }
+    if (selectedForm === "all") return allForms
     return allForms.filter(f => f.formId === selectedForm)
   }, [allForms, selectedForm])
 
   const calculateSubmissionRate = useCallback((userStatus: SubmissionStatus) => {
     const targetFormIds = targetForms.map(f => f.formId)
     const formsToCheck = userStatus.forms.filter(f => targetFormIds.includes(f.formId) && f.isRequired)
-    
     if (formsToCheck.length === 0) return 0
     const submittedCount = formsToCheck.filter(f => f.submitted).length
     return Math.round((submittedCount / formsToCheck.length) * 100)
@@ -110,7 +90,6 @@ export default function SubmissionsPage() {
   const processedStatuses = useMemo(() => {
     if (!data) return []
     let items = [...data.statuses]
-
     const currentUserId = data.statuses.length > 0 ? data.statuses[0].userId : null
 
     if (selectedTeam && selectedTeam !== "all") {
@@ -120,14 +99,12 @@ export default function SubmissionsPage() {
     items.sort((a, b) => {
       if (a.userId === currentUserId) return -1
       if (b.userId === currentUserId) return 1
-
       if (sortConfig) {
         if (sortConfig.key === "name") {
           const nameA = a.userName || a.userEmail
           const nameB = b.userName || b.userEmail
           return sortConfig.direction === "asc" 
-            ? nameA.localeCompare(nameB, "ja") 
-            : nameB.localeCompare(nameA, "ja")
+            ? nameA.localeCompare(nameB, "ja") : nameB.localeCompare(nameA, "ja")
         }
         if (sortConfig.key === "rate") {
           const rateA = calculateSubmissionRate(a)
@@ -137,50 +114,8 @@ export default function SubmissionsPage() {
       }
       return 0
     })
-
     return items
   }, [data, selectedTeam, sortConfig, calculateSubmissionRate])
-
-  // ■ チーム別集計ロジック（グラフ用）
-  const teamStats = useMemo(() => {
-    if (!data || data.statuses.length === 0) return []
-    
-    // 現在絞り込まれているフォーム（targetForms）を対象に集計
-    const statsMap = new Map<string, { total: number, submitted: number }>()
-
-    // data.statuses は全ユーザー（管理者の場合全員分取得できている）
-    data.statuses.forEach(user => {
-      const team = user.userTeam || "未所属"
-      if (!statsMap.has(team)) {
-        statsMap.set(team, { total: 0, submitted: 0 })
-      }
-      
-      const teamData = statsMap.get(team)!
-      
-      targetForms.forEach(tf => {
-        const form = user.forms.find(f => f.formId === tf.formId)
-        if (form && form.isRequired) {
-          teamData.total += 1
-          if (form.submitted) {
-            teamData.submitted += 1
-          }
-        }
-      })
-    })
-
-    return Array.from(statsMap.entries())
-      .map(([team, stats]) => ({
-        name: team,
-        提出済: stats.submitted,
-        未提出: stats.total - stats.submitted,
-        rate: stats.total > 0 ? Math.round((stats.submitted / stats.total) * 100) : 0,
-        total: stats.total
-      }))
-      // 合計対象フォームが0のチームはグラフから除外
-      .filter(stat => stat.total > 0)
-      // 提出率が低い順（要注意なチーム順）にソート
-      .sort((a, b) => a.rate - b.rate)
-  }, [data, targetForms])
 
   if (loading) {
     return (
@@ -230,8 +165,9 @@ export default function SubmissionsPage() {
     return normalize(f.creator) === normalize(myself.userName)
   })
 
-  // ■ 管理者かどうか判定
-  const isAdmin = currentUserRole.includes("管理") || currentUserRole.includes("admin") || currentUserRole.includes("全体")
+  // ■ フォーム作成者なら管理者として扱う
+  const isFormCreator = managedForms.length > 0
+  const isAdmin = currentUserRole.includes("管理") || currentUserRole.includes("admin") || currentUserRole.includes("全体") || isFormCreator
 
   return (
     <div className="space-y-6">
@@ -243,7 +179,6 @@ export default function SubmissionsPage() {
         </p>
       </div>
 
-      {/* 管理者用セクション: 自分が作成したフォームがある場合のみ表示 */}
       {managedForms.length > 0 && (
         <Card className="bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
           <CardHeader className="pb-3">
@@ -276,46 +211,6 @@ export default function SubmissionsPage() {
         </Card>
       )}
 
-      {/* ■ 管理者限定：チーム別提出状況グラフ */}
-      {isAdmin && teamStats.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <BarChart3 className="h-5 w-5 text-primary" />
-              チーム別提出状況（管理者限定）
-            </CardTitle>
-            <CardDescription>
-              {selectedForm === "all" ? "すべての対象フォームの合算データ" : "選択中のフォームのデータ"}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="h-[300px] w-full mt-4">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={teamStats} margin={{ top: 10, right: 30, left: 0, bottom: 30 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis 
-                    dataKey="name" 
-                    angle={-45} 
-                    textAnchor="end" 
-                    height={60} 
-                    tick={{ fontSize: 12 }} 
-                  />
-                  <YAxis allowDecimals={false} />
-                  <Tooltip 
-                    cursor={{fill: 'transparent'}}
-                    contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0' }}
-                  />
-                  <Legend verticalAlign="top" height={36}/>
-                  <Bar dataKey="提出済" stackId="a" fill="#22c55e" radius={[0, 0, 4, 4]} />
-                  <Bar dataKey="未提出" stackId="a" fill="#ef4444" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* フィルタリングバー */}
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-col md:flex-row gap-4">
@@ -323,7 +218,7 @@ export default function SubmissionsPage() {
               <label className="text-sm font-medium mb-1 block text-muted-foreground">チームで絞り込み</label>
               <div className="relative">
                 <select
-                  className="w-full h-10 px-3 py-2 rounded-md border border-input bg-background text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 appearance-none"
+                  className="w-full h-10 px-3 py-2 rounded-md border border-input bg-background text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 appearance-none"
                   value={selectedTeam}
                   onChange={(e) => setSelectedTeam(e.target.value)}
                 >
@@ -340,7 +235,7 @@ export default function SubmissionsPage() {
               <label className="text-sm font-medium mb-1 block text-muted-foreground">フォームを表示</label>
               <div className="relative">
                 <select
-                  className="w-full h-10 px-3 py-2 rounded-md border border-input bg-background text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 appearance-none"
+                  className="w-full h-10 px-3 py-2 rounded-md border border-input bg-background text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 appearance-none"
                   value={selectedForm}
                   onChange={(e) => setSelectedForm(e.target.value)}
                 >
@@ -361,7 +256,6 @@ export default function SubmissionsPage() {
           <CardTitle>提出状況一覧</CardTitle>
           <CardDescription>
             {processedStatuses.length}名のユーザーを表示中
-            {selectedForm !== "all" && "（フォーム絞り込み中）"}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -380,7 +274,7 @@ export default function SubmissionsPage() {
                     </Button>
                   </TableHead>
                   
-                  {(currentUserRole.includes("管理") || currentUserRole.includes("admin") || currentUserRole.includes("作成")) && (
+                  {isAdmin && (
                     <>
                       <TableHead className="min-w-[100px] align-top py-4 pt-5">権限</TableHead>
                       <TableHead className="min-w-[100px] align-top py-4 pt-5">チーム</TableHead>
@@ -400,16 +294,12 @@ export default function SubmissionsPage() {
                               target="_blank" 
                               rel="noopener noreferrer"
                               className="flex items-center justify-center gap-1 hover:underline hover:text-primary transition-colors font-semibold"
-                              title="Googleフォームを開く"
                             >
                               {form.formName}
                               <ExternalLink className="h-3 w-3 opacity-50" />
                             </a>
                           ) : (
-                            <div 
-                              className="flex items-center justify-center gap-1 text-muted-foreground/50 cursor-not-allowed"
-                              title="あなたはこのフォームの対象ではありません"
-                            >
+                            <div className="flex items-center justify-center gap-1 text-muted-foreground/50 cursor-not-allowed">
                               <span className="font-medium">{form.formName}</span>
                               <Lock className="h-3 w-3 opacity-50" />
                             </div>
@@ -446,7 +336,7 @@ export default function SubmissionsPage() {
                     return f && !f.submitted && f.isRequired
                   })
                   
-                  const isMe = data?.statuses[0]?.userId === userStatus.userId;
+                  const isMe = myself?.userId === userStatus.userId;
 
                   return (
                     <TableRow
@@ -461,7 +351,7 @@ export default function SubmissionsPage() {
                         {isMe && <Badge variant="secondary" className="ml-2 text-[10px]">あなた</Badge>}
                       </TableCell>
                       
-                      {(currentUserRole.includes("管理") || currentUserRole.includes("admin") || currentUserRole.includes("作成")) && (
+                      {isAdmin && (
                         <>
                           <TableCell>
                             <Badge variant="secondary">{userStatus.userRole}</Badge>
@@ -496,15 +386,7 @@ export default function SubmissionsPage() {
                       })}
 
                       <TableCell className="text-center">
-                        <span
-                          className={`font-semibold ${
-                            submissionRate === 100
-                              ? "text-green-600 dark:text-green-400"
-                              : submissionRate === 0
-                              ? "text-red-600 dark:text-red-400"
-                              : "text-yellow-600 dark:text-yellow-400"
-                          }`}
-                        >
+                        <span className={`font-semibold ${submissionRate === 100 ? "text-green-600" : submissionRate === 0 ? "text-red-600" : "text-yellow-600"}`}>
                           {submissionRate}%
                         </span>
                       </TableCell>
@@ -519,41 +401,27 @@ export default function SubmissionsPage() {
 
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">総ユーザー数</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold">{statuses.length}</p>
-          </CardContent>
+          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">総ユーザー数</CardTitle></CardHeader>
+          <CardContent><p className="text-2xl font-bold">{statuses.length}</p></CardContent>
         </Card>
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">
-              {selectedForm === "all" ? "全提出完了" : "提出済み"}
-            </CardTitle>
-          </CardHeader>
+          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">{selectedForm === "all" ? "全提出完了" : "提出済み"}</CardTitle></CardHeader>
           <CardContent>
             <p className="text-2xl font-bold text-green-600 dark:text-green-400">
               {processedStatuses.filter((s) => {
                  const targetFormIds = targetForms.map(f => f.formId)
-                 return s.forms
-                   .filter(f => targetFormIds.includes(f.formId) && f.isRequired)
-                   .every(f => f.submitted)
+                 return s.forms.filter(f => targetFormIds.includes(f.formId) && f.isRequired).every(f => f.submitted)
               }).length}
             </p>
           </CardContent>
         </Card>
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">未提出あり</CardTitle>
-          </CardHeader>
+          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">未提出あり</CardTitle></CardHeader>
           <CardContent>
             <p className="text-2xl font-bold text-red-600 dark:text-red-400">
               {processedStatuses.filter((s) => {
                  const targetFormIds = targetForms.map(f => f.formId)
-                 return s.forms
-                   .filter(f => targetFormIds.includes(f.formId) && f.isRequired)
-                   .some(f => !f.submitted)
+                 return s.forms.filter(f => targetFormIds.includes(f.formId) && f.isRequired).some(f => !f.submitted)
               }).length}
             </p>
           </CardContent>
