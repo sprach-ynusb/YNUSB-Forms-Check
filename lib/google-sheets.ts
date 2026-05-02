@@ -131,7 +131,7 @@ export async function updatePassword(name: string, newPassword: string): Promise
   }
 }
 
-// ■ 完成版: 複数列スキャン対応
+// ■ 完成版: 全列・全テキストスキャン対応
 export async function calculateSubmissionStatus(viewerName: string, targetFormId?: string): Promise<SubmissionStatus[]> {
   const managementId = process.env.GOOGLE_MANAGEMENT_SHEET_ID
   if (!managementId) throw new Error("環境変数 GOOGLE_MANAGEMENT_SHEET_ID がありません")
@@ -221,72 +221,53 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     return a.normalizedName.localeCompare(b.normalizedName, "ja")
   })
 
-  // 4. 回答状況取得（複数列スキャン）
-  const getSubmittedNames = async (id: string, formName: string, sheetName?: string) => {
+  // 4. 回答状況取得（★全列の文字をくっつけて判定する最強ロジック）
+  const getSubmittedRowTexts = async (id: string, sheetName?: string) => {
     const range = sheetName ? `${sheetName}!A:Z` : "A:Z"
     const data = await getSheetData(id, range)
-    if (data.length < 2) return new Set<string>()
+    if (data.length < 2) return []
     
-    const header = data[0]
+    const submittedTexts: string[] = []
     
-    // ■ 修正ポイント：1列に絞らず、キーワードにヒットする列を「すべて」対象にする
-    const targetIndices: number[] = []
-    
-    header.forEach((colName, index) => {
-      // 検索キーワード
-      const keywords = ["名前", "氏名", "Name", "name", "あだ名", "ニックネーム", "Nickname", "通称", "呼称"]
-      const isMatch = keywords.some(keyword => colName.includes(keyword))
-      
-      if (isMatch) {
-        targetIndices.push(index)
-      }
-    })
-
-    // もし何も見つからなければ、慣例的に2列目(index 1)を追加
-    if (targetIndices.length === 0 && header.length > 1) {
-      targetIndices.push(1)
-    }
-    
-    // 見つかった列すべての値をSetに格納
-    const set = new Set<string>()
+    // 1行目(index=0)は質問文(ヘッダー)なのでスキップし、2行目から読み込む
     for (let i = 1; i < data.length; i++) {
-      for (const idx of targetIndices) {
-        if (data[i][idx]) {
-          set.add(normalizeName(data[i][idx]))
-        }
-      }
+      const rowData = data[i]
+      // その行にあるすべての文字をくっつけて1つの長い文字列にする
+      const joinedRowText = rowData.join("")
+      // 空白などを消して小文字に統一した状態で保存
+      submittedTexts.push(normalizeName(joinedRowText))
     }
     
-    return set
+    return submittedTexts
   }
 
-  const formSubmissions = new Map<string, Set<string>>()
+  const formSubmissions = new Map<string, string[]>()
   for (const form of forms) {
-    const set = await getSubmittedNames(form.id, form.name, form.sheetName)
-    formSubmissions.set(form.name, set)
+    const texts = await getSubmittedRowTexts(form.id, form.sheetName)
+    formSubmissions.set(form.name, texts)
   }
 
   // 5. 組み立て
   return targetUsers.map(user => {
     const userForms = forms.map(form => {
-      const submittedSet = formSubmissions.get(form.name)
+      const submittedTexts = formSubmissions.get(form.name)
       let isSubmitted = false
-      if (submittedSet) {
-        if (submittedSet.has(user.normalizedName)) {
-          isSubmitted = true
-        } else if (user.normalizedNickname && submittedSet.has(user.normalizedNickname)) {
-          isSubmitted = true
-        } else {
-          for (const submittedName of submittedSet) {
-            if (submittedName.includes(user.normalizedName)) {
-              isSubmitted = true; break
-            }
-            if (user.normalizedNickname && submittedName.includes(user.normalizedNickname)) {
-              isSubmitted = true; break
-            }
+      
+      if (submittedTexts) {
+        for (const rowText of submittedTexts) {
+          // 本名が設定されていて、かつ行のどこかに本名が含まれていればOK
+          if (user.normalizedName && rowText.includes(user.normalizedName)) {
+            isSubmitted = true
+            break
+          }
+          // あだ名が設定されていて、かつ行のどこかにあだ名が含まれていればOK
+          if (user.normalizedNickname && rowText.includes(user.normalizedNickname)) {
+            isSubmitted = true
+            break
           }
         }
       }
+      
       let isRequired = true
       if (form.targetGroups) {
         const allowedGroups = form.targetGroups.split(/[,、\s]+/).map(g => g.trim()).filter(g => g)
