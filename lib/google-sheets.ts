@@ -131,7 +131,7 @@ export async function updatePassword(name: string, newPassword: string): Promise
   }
 }
 
-// ■ 完成版: 全列・全テキストスキャン対応
+// ■ 完成版（回答シートのあだ名列対応）
 export async function calculateSubmissionStatus(viewerName: string, targetFormId?: string): Promise<SubmissionStatus[]> {
   const managementId = process.env.GOOGLE_MANAGEMENT_SHEET_ID
   if (!managementId) throw new Error("環境変数 GOOGLE_MANAGEMENT_SHEET_ID がありません")
@@ -160,16 +160,9 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
   const roleIdx = header.findIndex(c => c.includes("権限"))
   const teamIdx = header.findIndex(c => c.includes("チーム"))
   const groupIdx = header.findIndex(c => c.includes("グループ") || c.includes("Group"))
-  
-  // あだ名列の検出（ヘッダーから探す）
   const nicknameIdx = header.findIndex(c => 
-    c.includes("あだ名") || 
-    c.includes("ニックネーム") || 
-    c.includes("Nickname") ||
-    c.includes("通称") ||
-    c.includes("呼称")
+    c.includes("あだ名") || c.includes("ニックネーム") || c.includes("Nickname") || c.includes("通称") || c.includes("呼称")
   )
-  
   const safeNameIdx = nameIdx === -1 ? 0 : nameIdx
 
   const allUsers = rosterData.slice(1).map(row => {
@@ -193,6 +186,7 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
 
   let targetUsers: typeof allUsers = []
   const isGlobalAdmin = viewer.role.includes("全体") || viewer.role.includes("管理") || viewer.role.includes("admin")
+
   let isTargetFormCreator = false
   if (targetFormId) {
     const targetForm = forms.find(f => f.id === targetFormId)
@@ -221,53 +215,71 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     return a.normalizedName.localeCompare(b.normalizedName, "ja")
   })
 
-  // 4. 回答状況取得（★全列の文字をくっつけて判定する最強ロジック）
-  const getSubmittedRowTexts = async (id: string, sheetName?: string) => {
+  // 4. 回答状況取得
+  const getSubmittedNames = async (id: string, sheetName?: string) => {
     const range = sheetName ? `${sheetName}!A:Z` : "A:Z"
     const data = await getSheetData(id, range)
-    if (data.length < 2) return []
+    if (data.length < 2) return new Set<string>()
+    const header = data[0]
+
+    // ■ 修正: 回答シート側も「あだ名」を探すように変更
+    let nameIdx = header.findIndex(c => c.includes("名前") || c.includes("氏名") || c.includes("name") || c.includes("Name"))
     
-    const submittedTexts: string[] = []
-    
-    // 1行目(index=0)は質問文(ヘッダー)なのでスキップし、2行目から読み込む
-    for (let i = 1; i < data.length; i++) {
-      const rowData = data[i]
-      // その行にあるすべての文字をくっつけて1つの長い文字列にする
-      const joinedRowText = rowData.join("")
-      // 空白などを消して小文字に統一した状態で保存
-      submittedTexts.push(normalizeName(joinedRowText))
+    // なければ「あだ名」を探す
+    if (nameIdx === -1) {
+      nameIdx = header.findIndex(c => 
+        c.includes("あだ名") || 
+        c.includes("ニックネーム") || 
+        c.includes("Nickname") ||
+        c.includes("通称")
+      )
     }
-    
-    return submittedTexts
+
+    // それでもなければ、B列(index 1)を採用（Googleフォームの定石）
+    if (nameIdx === -1 && header.length > 1) nameIdx = 1
+    // 万が一1列しかなければA列
+    if (nameIdx === -1) nameIdx = 0
+
+    const set = new Set<string>()
+    if (nameIdx !== -1) {
+      for (let i = 1; i < data.length; i++) {
+        if (data[i][nameIdx]) set.add(normalizeName(data[i][nameIdx]))
+      }
+    }
+    return set
   }
 
-  const formSubmissions = new Map<string, string[]>()
+  const formSubmissions = new Map<string, Set<string>>()
   for (const form of forms) {
-    const texts = await getSubmittedRowTexts(form.id, form.sheetName)
-    formSubmissions.set(form.name, texts)
+    const set = await getSubmittedNames(form.id, form.sheetName)
+    formSubmissions.set(form.name, set)
   }
 
   // 5. 組み立て
   return targetUsers.map(user => {
     const userForms = forms.map(form => {
-      const submittedTexts = formSubmissions.get(form.name)
+      const submittedSet = formSubmissions.get(form.name)
       let isSubmitted = false
-      
-      if (submittedTexts) {
-        for (const rowText of submittedTexts) {
-          // 本名が設定されていて、かつ行のどこかに本名が含まれていればOK
-          if (user.normalizedName && rowText.includes(user.normalizedName)) {
-            isSubmitted = true
-            break
-          }
-          // あだ名が設定されていて、かつ行のどこかにあだ名が含まれていればOK
-          if (user.normalizedNickname && rowText.includes(user.normalizedNickname)) {
-            isSubmitted = true
-            break
+      if (submittedSet) {
+        // 本名チェック
+        if (submittedSet.has(user.normalizedName)) {
+          isSubmitted = true
+        } 
+        // あだ名チェック
+        else if (user.normalizedNickname && submittedSet.has(user.normalizedNickname)) {
+          isSubmitted = true
+        } else {
+          // 部分一致チェック（本名 or あだ名）
+          for (const submittedName of submittedSet) {
+            if (submittedName.includes(user.normalizedName)) {
+              isSubmitted = true; break
+            }
+            if (user.normalizedNickname && submittedName.includes(user.normalizedNickname)) {
+              isSubmitted = true; break
+            }
           }
         }
       }
-      
       let isRequired = true
       if (form.targetGroups) {
         const allowedGroups = form.targetGroups.split(/[,、\s]+/).map(g => g.trim()).filter(g => g)
