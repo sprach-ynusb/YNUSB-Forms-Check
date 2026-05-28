@@ -77,7 +77,8 @@ export async function authenticateUser(name: string, password: string) {
   if (data.length < 2) return null
 
   const header = data[0]
-  const nameIdx = header.findIndex(c => c.includes("名前") || c.includes("氏名"))
+  // 名簿側の名前も完全一致に限定
+  const nameIdx = header.findIndex(c => c.trim() === "名前" || c.trim() === "氏名")
   const passIdx = header.findIndex(c => c.includes("パスワード") || c.includes("PASS"))
   const roleIdx = header.findIndex(c => c.includes("権限"))
   const teamIdx = header.findIndex(c => c.includes("チーム"))
@@ -109,7 +110,7 @@ export async function updatePassword(name: string, newPassword: string): Promise
   const sheets = getSheetsClient()
   const data = await getSheetData(managementId, "名簿!A:Z")
   const header = data[0]
-  const nameIdx = header.findIndex(c => c.includes("名前"))
+  const nameIdx = header.findIndex(c => c.trim() === "名前" || c.trim() === "氏名")
   const passIdx = header.findIndex(c => c.includes("パスワード"))
   if (nameIdx === -1 || passIdx === -1) return false
   const normalizedInputName = normalizeName(name)
@@ -131,7 +132,7 @@ export async function updatePassword(name: string, newPassword: string): Promise
   }
 }
 
-// ■ 完成版（回答シートのあだ名列対応）
+// ■ 完成版: 「あだ名」を含む列に限定するスマートなスキャン
 export async function calculateSubmissionStatus(viewerName: string, targetFormId?: string): Promise<SubmissionStatus[]> {
   const managementId = process.env.GOOGLE_MANAGEMENT_SHEET_ID
   if (!managementId) throw new Error("環境変数 GOOGLE_MANAGEMENT_SHEET_ID がありません")
@@ -156,13 +157,16 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
 
   // 2. 名簿データのパース
   const header = rosterData[0] || []
-  const nameIdx = header.findIndex(c => c.includes("名前") || c.includes("氏名"))
+  
+  // 名簿側も完全一致に限定（LINEの名前等を誤検知しないため）
+  const nameIdx = header.findIndex(c => c.trim() === "名前" || c.trim() === "氏名")
   const roleIdx = header.findIndex(c => c.includes("権限"))
   const teamIdx = header.findIndex(c => c.includes("チーム"))
   const groupIdx = header.findIndex(c => c.includes("グループ") || c.includes("Group"))
-  const nicknameIdx = header.findIndex(c => 
-    c.includes("あだ名") || c.includes("ニックネーム") || c.includes("Nickname") || c.includes("通称") || c.includes("呼称")
-  )
+  
+  // あだ名列の検出（ご要望通り「あだ名」が含まれるものに限定）
+  const nicknameIdx = header.findIndex(c => c.includes("あだ名"))
+  
   const safeNameIdx = nameIdx === -1 ? 0 : nameIdx
 
   const allUsers = rosterData.slice(1).map(row => {
@@ -186,7 +190,6 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
 
   let targetUsers: typeof allUsers = []
   const isGlobalAdmin = viewer.role.includes("全体") || viewer.role.includes("管理") || viewer.role.includes("admin")
-
   let isTargetFormCreator = false
   if (targetFormId) {
     const targetForm = forms.find(f => f.id === targetFormId)
@@ -215,43 +218,47 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
     return a.normalizedName.localeCompare(b.normalizedName, "ja")
   })
 
-  // 4. 回答状況取得
-  const getSubmittedNames = async (id: string, sheetName?: string) => {
+  // 4. 回答状況取得（ご要望の限定ロジック）
+  const getSubmittedNames = async (id: string, formName: string, sheetName?: string) => {
     const range = sheetName ? `${sheetName}!A:Z` : "A:Z"
     const data = await getSheetData(id, range)
     if (data.length < 2) return new Set<string>()
-    const header = data[0]
-
-    // ■ 修正: 回答シート側も「あだ名」を探すように変更
-    let nameIdx = header.findIndex(c => c.includes("名前") || c.includes("氏名") || c.includes("name") || c.includes("Name"))
     
-    // なければ「あだ名」を探す
-    if (nameIdx === -1) {
-      nameIdx = header.findIndex(c => 
-        c.includes("あだ名") || 
-        c.includes("ニックネーム") || 
-        c.includes("Nickname") ||
-        c.includes("通称")
-      )
+    const header = data[0]
+    const targetIndices: number[] = []
+    
+    header.forEach((colName, index) => {
+      const trimmed = colName.trim()
+      
+      // ■ 修正ポイント: 除外リストを使わず、明確な条件に合致するものだけに「限定」
+      // 1. 「あだ名」という文字が含まれている
+      // 2. 「名前」または「氏名」と完全一致している (※LINEの名前等は完全一致しないので弾かれる)
+      if (trimmed.includes("あだ名") || trimmed === "名前" || trimmed === "氏名") {
+        targetIndices.push(index)
+      }
+    })
+
+    // もし何も見つからなければ、慣例的に2列目(index 1)を追加
+    if (targetIndices.length === 0 && header.length > 1) {
+      targetIndices.push(1)
     }
-
-    // それでもなければ、B列(index 1)を採用（Googleフォームの定石）
-    if (nameIdx === -1 && header.length > 1) nameIdx = 1
-    // 万が一1列しかなければA列
-    if (nameIdx === -1) nameIdx = 0
-
+    
+    // 見つかった列すべての値をSetに格納
     const set = new Set<string>()
-    if (nameIdx !== -1) {
-      for (let i = 1; i < data.length; i++) {
-        if (data[i][nameIdx]) set.add(normalizeName(data[i][nameIdx]))
+    for (let i = 1; i < data.length; i++) {
+      for (const idx of targetIndices) {
+        if (data[i][idx]) {
+          set.add(normalizeName(data[i][idx]))
+        }
       }
     }
+    
     return set
   }
 
   const formSubmissions = new Map<string, Set<string>>()
   for (const form of forms) {
-    const set = await getSubmittedNames(form.id, form.sheetName)
+    const set = await getSubmittedNames(form.id, form.name, form.sheetName)
     formSubmissions.set(form.name, set)
   }
 
@@ -261,15 +268,11 @@ export async function calculateSubmissionStatus(viewerName: string, targetFormId
       const submittedSet = formSubmissions.get(form.name)
       let isSubmitted = false
       if (submittedSet) {
-        // 本名チェック
         if (submittedSet.has(user.normalizedName)) {
           isSubmitted = true
-        } 
-        // あだ名チェック
-        else if (user.normalizedNickname && submittedSet.has(user.normalizedNickname)) {
+        } else if (user.normalizedNickname && submittedSet.has(user.normalizedNickname)) {
           isSubmitted = true
         } else {
-          // 部分一致チェック（本名 or あだ名）
           for (const submittedName of submittedSet) {
             if (submittedName.includes(user.normalizedName)) {
               isSubmitted = true; break
