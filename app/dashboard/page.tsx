@@ -14,7 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { SubmissionStatus } from "@/lib/google-sheets"
-import { Loader2, AlertCircle, Settings, ChevronRight, Minus, ArrowUpDown, ExternalLink, Filter, Calendar, Lock } from "lucide-react"
+import { Loader2, AlertCircle, Settings, ChevronRight, Minus, ArrowUpDown, ExternalLink, Filter, Calendar } from "lucide-react"
 
 interface SubmissionStatusResponse {
   statuses: SubmissionStatus[]
@@ -68,10 +68,24 @@ export default function SubmissionsPage() {
     return [...data.statuses[0].forms].reverse()
   }, [data])
 
+  // ■ 修正: プルダウン用に「自分が対象のフォーム」だけを抽出
+  const myTargetAllForms = useMemo(() => {
+    if (!data || data.statuses.length === 0) return []
+    const myself = data.statuses[0]
+    return allForms.filter(f => {
+      const myFormStatus = myself.forms.find(mf => mf.formId === f.formId)
+      return myFormStatus?.isRequired
+    })
+  }, [allForms, data])
+
+  // ■ 修正: テーブルの列として表示するフォームを「自分が対象のもの」かつ「選択中」に絞り込み
   const targetForms = useMemo(() => {
-    if (selectedForm === "all") return allForms
-    return allForms.filter(f => f.formId === selectedForm)
-  }, [allForms, selectedForm])
+    let filteredForms = myTargetAllForms
+    if (selectedForm !== "all") {
+      filteredForms = filteredForms.filter(f => f.formId === selectedForm)
+    }
+    return filteredForms
+  }, [myTargetAllForms, selectedForm])
 
   const calculateSubmissionRate = useCallback((userStatus: SubmissionStatus) => {
     const targetFormIds = targetForms.map(f => f.formId)
@@ -165,7 +179,6 @@ export default function SubmissionsPage() {
     return normalize(f.creator) === normalize(myself.userName)
   })
 
-  // ■ フォーム作成者なら管理者として扱う
   const isFormCreator = managedForms.length > 0
   const isAdmin = currentUserRole.includes("管理") || currentUserRole.includes("admin") || currentUserRole.includes("全体") || isFormCreator
 
@@ -179,6 +192,7 @@ export default function SubmissionsPage() {
         </p>
       </div>
 
+      {/* 管理者用: 管理中のフォーム（ここは全フォームが対象になります） */}
       {managedForms.length > 0 && (
         <Card className="bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
           <CardHeader className="pb-3">
@@ -240,7 +254,8 @@ export default function SubmissionsPage() {
                   onChange={(e) => setSelectedForm(e.target.value)}
                 >
                   <option value="all">すべてのフォーム</option>
-                  {allForms.map(form => (
+                  {/* ■ 修正: プルダウンも対象フォームだけ表示 */}
+                  {myTargetAllForms.map(form => (
                     <option key={form.formId} value={form.formId}>{form.formName}</option>
                   ))}
                 </select>
@@ -281,29 +296,21 @@ export default function SubmissionsPage() {
                     </>
                   )}
                   
+                  {/* ■ 修正: targetFormsには自分向けのフォームしか入っていないので常にリンク表示 */}
                   {targetForms.map((form) => {
-                    const myFormStatus = myself.forms.find(f => f.formId === form.formId)
-                    const isTargetForMe = myFormStatus?.isRequired
-
                     return (
                       <TableHead key={form.formId} className="text-center min-w-[120px] align-top py-4">
                         <div className="flex flex-col items-center gap-1">
-                          {isTargetForMe ? (
-                            <a 
-                              href={form.formUrl} 
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="flex items-center justify-center gap-1 hover:underline hover:text-primary transition-colors font-semibold"
-                            >
-                              {form.formName}
-                              <ExternalLink className="h-3 w-3 opacity-50" />
-                            </a>
-                          ) : (
-                            <div className="flex items-center justify-center gap-1 text-muted-foreground/50 cursor-not-allowed">
-                              <span className="font-medium">{form.formName}</span>
-                              <Lock className="h-3 w-3 opacity-50" />
-                            </div>
-                          )}
+                          <a 
+                            href={form.formUrl} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="flex items-center justify-center gap-1 hover:underline hover:text-primary transition-colors font-semibold"
+                            title="Googleフォームを開く"
+                          >
+                            {form.formName}
+                            <ExternalLink className="h-3 w-3 opacity-50" />
+                          </a>
                           
                           {form.deadline && (
                             <div className="flex items-center text-xs text-muted-foreground font-normal">
